@@ -167,6 +167,8 @@ footer .by b{font-family:'Playfair Display',serif;color:var(--chinar);font-size:
     <form id="fareForm" action="" method="POST">
       <!-- District is derived from the origin hub and sent to the backend -->
       <input type="hidden" id="district" name="district" value="Anantnag (Pahalgam)">
+      <!-- Distance is calculated automatically from origin -> destination -->
+      <input type="hidden" id="route_distance_km" name="route_distance_km" value="">
 
       <div class="section-title">Route</div>
       <div class="grid">
@@ -199,9 +201,8 @@ footer .by b{font-family:'Playfair Display',serif;color:var(--chinar);font-size:
           <span class="hint" id="destCount"></span>
         </div>
 
-        <div class="field">
-          <label for="route_distance_km">Distance (km)</label>
-          <input type="number" step="0.1" min="0" id="route_distance_km" name="route_distance_km" placeholder="e.g. 52" required>
+        <div class="field full">
+          <span class="hint">📍 Distance origin se destination tak road route se automatic calculate hoti hai.</span>
         </div>
 
         <div class="field">
@@ -249,13 +250,12 @@ footer .by b{font-family:'Playfair Display',serif;color:var(--chinar);font-size:
         </div>
       </div>
 
-      <!-- Optional: defaults are posted even when closed -->
-      <details>
-        <summary>More details (optional)</summary>
-        <div class="grid">
+      <div class="section-title">Trip specifics</div>
+      <div class="grid">
           <div class="field">
-            <label for="booking_channel">Booking channel</label>
+            <label for="booking_channel">Booking channel *</label>
             <select id="booking_channel" name="booking_channel" required>
+              <option value="" disabled selected>Select booking channel</option>
               <option value="Direct_Spot_Negotiation">Direct Spot Negotiation</option>
               <option value="Official_Prepaid_Union_Booth">Official Prepaid Union Booth</option>
               <option value="Hotel_Travel_Desk_Agent">Hotel Travel Desk Agent</option>
@@ -263,8 +263,9 @@ footer .by b{font-family:'Playfair Display',serif;color:var(--chinar);font-size:
             </select>
           </div>
           <div class="field">
-            <label for="terrain_difficulty">Terrain</label>
+            <label for="terrain_difficulty">Terrain *</label>
             <select id="terrain_difficulty" name="terrain_difficulty" required>
+              <option value="" disabled selected>Select terrain</option>
               <option value="Steep_Mountain_Road">Steep Mountain Road</option>
               <option value="Unpaved_Pony_Bridle_Track">Unpaved Pony Bridle Track</option>
               <option value="High_Altitude_Glacier_Pass">High Altitude Glacier Pass</option>
@@ -273,25 +274,24 @@ footer .by b{font-family:'Playfair Display',serif;color:var(--chinar);font-size:
             </select>
           </div>
           <div class="field">
-            <label for="trip_duration_hours">Trip duration (hrs)</label>
-            <input type="number" step="0.5" min="0" id="trip_duration_hours" name="trip_duration_hours" value="8" required>
+            <label for="trip_duration_hours">Trip duration (hrs) *</label>
+            <input type="number" step="0.5" min="0" id="trip_duration_hours" name="trip_duration_hours" placeholder="e.g. 8" required>
           </div>
           <div class="field">
-            <label for="extra_waiting_hours">Extra waiting (hrs)</label>
+            <label for="extra_waiting_hours">Extra waiting (hrs) *</label>
             <input type="number" step="0.5" min="0" id="extra_waiting_hours" name="extra_waiting_hours" value="0" required>
           </div>
           <div class="field">
-            <label for="units_hired">Units hired</label>
+            <label for="units_hired">Units hired *</label>
             <input type="number" min="1" id="units_hired" name="units_hired" value="1" required>
           </div>
           <div class="field" style="justify-content:flex-end">
             <label class="check">
               <input type="checkbox" id="outside_cabs_restricted" name="outside_cabs_restricted" value="1">
-              Outside cabs restricted
+              Outside cabs restricted at destination
             </label>
           </div>
-        </div>
-      </details>
+      </div>
 
       <div class="actions">
         <button class="go" id="submitBtn" type="submit">Fare Check Karo →</button>
@@ -568,7 +568,7 @@ function restoreForm() {
   if (!data) return;
   Object.keys(data).forEach(name => {
     const el = form.elements[name];
-    if (!el || name === 'district') return;
+    if (!el || name === 'district' || name === 'route_distance_km') return;
     if (el.type === 'checkbox') el.checked = !!data[name];
     else el.value = data[name];
   });
@@ -577,12 +577,137 @@ function restoreForm() {
 restoreForm();
 syncDistrict();
 
-form.addEventListener('submit', () => {
+/* ---------- Real route distance (hidden field) ---------- */
+const ROUND_TRIP = false;  // set true to send there-and-back distance instead of one-way
+const MIN_KM = 1;          // very short hops are never sent as 0 km
+
+// Approximate GPS coordinates [lat, lng] of every pickup hub
+const hubCoords = {
+  Pahalgam_Main_Taxi_Stand: [34.0161, 75.3150],
+  Srinagar_TRC_Tourist_Taxi_Stand: [34.0715, 74.8175],
+  Sonamarg_Forest_Checkpost_Stand: [34.3050, 75.2930],
+  Gulmarg_Main_Market_Stand: [34.0484, 74.3805],
+  Pahalgam_Pony_Stand_KP_Road: [34.0170, 75.3170],
+  Tangmarg_Winter_Terminal: [34.0742, 74.4166],
+  Dal_Lake_Boulevard_Ghat_1_to_16: [34.0900, 74.8350],
+  Gulmarg_Gondola_Base_Bowl: [34.0510, 74.3830],
+  Bandipora_Gurez_Sumo_Stand: [34.4170, 74.6430],
+  Anantnag_Daksum_Taxi_Stand: [33.7311, 75.1487],
+  Sonamarg_Pony_Stand_Meadow: [34.3040, 75.2960],
+  Kongdori_Phase1_Snow_Bowl: [34.0500, 74.3790],
+  Nigeen_Lake_Club_Ghat: [34.1170, 74.8400],
+  Sonamarg_Snow_Bridge_Point: [34.3070, 75.3010],
+  Yusmarg_Main_Bowl_Stand: [33.8350, 74.6670],
+  Doodhpathri_Tangnar_Pony_Stand: [33.8650, 74.5850]
+};
+
+// Approximate coordinates of each destination (matched by name prefix, so all variants share one point)
+const placeCoords = {
+  Apharwat_Foothill_Snowmobile_30Min_Sprint: [34.0300, 74.3730],
+  Aru_Valley_Return_With_1Hr_Halt: [34.0950, 75.2500],
+  Baisaran_Mini_Switzerland_5km_Return: [34.0290, 75.3350],
+  Baisaran_Plus_Dabiyan_Kashmir_Valley_Point: [34.0330, 75.3400],
+  Baltal_And_Sarbal_Last_Village_Return: [34.2750, 75.4100],
+  Betaab_Valley_Return_With_1Hr_Halt: [34.0550, 75.3900],
+  Botapathri_Ningli_Nallah_Meadow_Return: [34.0100, 75.2900],
+  Chandanwari_Glacier_Point_Return: [34.0830, 75.4600],
+  Char_Chinar_Meena_Bazaar_Floating_Gardens_Cruise: [34.1140, 74.8420],
+  Drung_Frozen_Waterfall_Return_Trip: [34.0700, 74.3950],
+  Full_ABC_Circuit_Aru_Betaab_Chandanwari: [34.0830, 75.4600],
+  Gondola_Gate_And_Phase1_Snow_Sledge_Circuit: [34.0500, 74.3790],
+  Gulmarg_Golf_Course_30Min_ATV_Trail: [34.0470, 74.3860],
+  Gulmarg_Gondola_Base_Return_Snow_Transfer: [34.0510, 74.3830],
+  Khilanmarg_Viewpoint_Pony_Roundtrip: [34.0380, 74.3680],
+  Maharaja_Palace_Childrens_Park_St_Marys_Loop: [34.0495, 74.3790],
+  Nehru_Park_Golden_Lake_1Hr_Standard_Loop: [34.0960, 74.8400],
+  Nilnag_Lake_And_Doodhganga_Pony_Circuit: [33.8450, 74.6600],
+  Pokhribal_Badamwari_Nigeen_Heritage_Waterway: [34.1180, 74.8400],
+  Razdan_Pass_To_Dawar_Habba_Khatoon_Transfer: [34.6300, 74.8000],
+  Shaliganga_Diskhal_Meadow_Pony_Loop: [33.8600, 74.5750],
+  Sinthan_Top_3800m_Snow_Pass_Return: [33.5400, 75.3800],
+  Srinagar_Mughal_Gardens_Shankaracharya_Full_Day: [34.1100, 74.8750],
+  Srinagar_To_Doodhpathri_Pine_Bowl_Day_Return: [33.8650, 74.5850],
+  Srinagar_To_Pahalgam_Day_Return_Transfer: [34.0161, 75.3150],
+  Srinagar_To_Sonamarg_Day_Return_Intercity: [34.3000, 75.2950],
+  Thajiwas_Glacier_Base_Pony_Roundtrip: [34.3150, 75.3200],
+  Thajiwas_Glacier_Snow_Sledge_Roundtrip: [34.3150, 75.3200],
+  Tulian_Alpine_Lake_16km_Expedition: [34.0900, 75.3900],
+  Zero_Point_Zojila_Pass_Return_Expedition: [34.3070, 75.4700]
+};
+const placeKeys = Object.keys(placeCoords).sort((a, b) => b.length - a.length);
+const coordsFor = v => { const k = placeKeys.find(k => v.startsWith(k)); return k ? placeCoords[k] : null; };
+
+const distInput = $('route_distance_km');
+const distCache = {};
+
+function haversineKm(a, b) {
+  const R = 6371, rad = x => x * Math.PI / 180;
+  const dLat = rad(b[0] - a[0]), dLng = rad(b[1] - a[1]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Real driving distance from the OSRM routing service
+async function roadKm(a, b) {
+  const url = 'https://router.project-osrm.org/route/v1/driving/' +
+    a[1] + ',' + a[0] + ';' + b[1] + ',' + b[0] + '?overview=false';
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 7000);
+  try {
+    const res = await fetch(url, { signal: ctl.signal });
+    const j = await res.json();
+    if (j.code === 'Ok' && j.routes && j.routes[0]) return j.routes[0].distance / 1000;
+  } catch (e) { /* fall back below */ }
+  finally { clearTimeout(timer); }
+  return null;
+}
+
+async function computeDistance() {
+  const h = hubSelect.value, d = destSelect.value, key = h + '|' + d;
+  if (distCache[key] != null) return distCache[key];
+  const a = hubCoords[h], b = coordsFor(d);
+  if (!a || !b) return null;
+  let km = await roadKm(a, b);
+  if (km == null) km = haversineKm(a, b) * 1.4;   // offline fallback: straight line x mountain-road factor
+  km = Math.max(MIN_KM, km);
+  if (ROUND_TRIP) km *= 2;
+  km = Math.round(km * 10) / 10;
+  distCache[key] = km;
+  return km;
+}
+
+async function updateDistance() {
+  const key = hubSelect.value + '|' + destSelect.value;
+  const km = await computeDistance();
+  if (km != null) { distInput.value = km; distInput.dataset.key = key; }
+  else { distInput.value = ''; distInput.dataset.key = ''; }
+  return km;
+}
+hubSelect.addEventListener('change', updateDistance);
+destSelect.addEventListener('change', updateDistance);
+updateDistance();
+
+form.addEventListener('submit', async e => {
   syncDistrict();
-  saveForm();
   err.style.display = 'none';
+  const key = hubSelect.value + '|' + destSelect.value;
+  const ready = distInput.value && distInput.dataset.key === key;
   btn.disabled = true;
-  btn.textContent = 'Calculating…';
+  btn.textContent = 'Calculating route…';
+
+  if (ready) { saveForm(); return; }   // normal submit, distance already set
+
+  e.preventDefault();                  // wait for the distance, then submit
+  const km = await updateDistance();
+  if (km == null) {
+    err.textContent = 'Is route ki distance calculate nahi ho paayi. Koi aur destination chuno.';
+    err.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Fare Check Karo →';
+    return;
+  }
+  saveForm();
+  form.submit();
 });
 $('resetBtn').addEventListener('click', () => {
   try { sessionStorage.removeItem(KEY); } catch (e) {}
